@@ -1,6 +1,7 @@
 # session-memo
 
 Claude Code のセッションごとに TODO とメモを残す mod です。中身は Markdown ファイルとして保存され、プロンプトの上に件数が出て、ペインで一覧・追加・チェック・削除ができます。
+参考URL　https://zenn.dev/yesodco/articles/da634d752874b2#%E4%BD%9C%E3%81%A3%E3%81%9F%E3%82%82%E3%81%AE%E3%80%8Csession-memo%E3%80%8D
 
 ## インストール
 
