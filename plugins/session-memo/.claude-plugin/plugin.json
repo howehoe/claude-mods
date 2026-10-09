@@ -1,0 +1,9 @@
+{
+  "name": "session-memo",
+  "version": "0.1.0",
+  "description": "Per-session TODO and memo kept as Markdown, with a band above the prompt and a /memo pane",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "howehoe"
+  }
+}

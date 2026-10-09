@@ -1,0 +1,13 @@
+{
+  "name": "claude-mods",
+  "owner": {
+    "name": "howehoe"
+  },
+  "description": "Claude Code 用の mod 集",
+  "plugins": [
+    {
+      "name": "session-memo",
+      "source": "./plugins/session-memo"
+    }
+  ]
+}
