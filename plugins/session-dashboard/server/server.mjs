@@ -14,9 +14,12 @@ import { fileURLToPath } from 'node:url';
 import {
   buildSummaryPrompt,
   displayStatus,
-  extractUserMessages,
+  parseTranscript,
   isClosable,
+  isTrunkBranch,
   isVisible,
+  parsePrList,
+  prCacheTtl,
   projectName,
   sortSessions,
 } from './lib.mjs';
@@ -34,26 +37,27 @@ const TICK_MS = 2000;
 fs.mkdirSync(STATE_DIR, { recursive: true });
 
 // ---- transcript ----------------------------------------------------------
-/** @type {Map<string, {mtimeMs:number,size:number,messages:any[]}>} */
+/** @type {Map<string, {mtimeMs:number,size:number,messages:any[],lastAssistantText:string|null}>} */
 const transcriptCache = new Map();
+const EMPTY_TRANSCRIPT = { mtimeMs: 0, messages: [], lastAssistantText: null };
 
 function readTranscript(file) {
-  if (!file) return { mtimeMs: 0, messages: [] };
+  if (!file) return EMPTY_TRANSCRIPT;
   let st;
   try {
     st = fs.statSync(file);
   } catch {
-    return { mtimeMs: 0, messages: [] };
+    return EMPTY_TRANSCRIPT;
   }
   const hit = transcriptCache.get(file);
   if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
-  let messages = [];
+  let parsed = { messages: [], lastAssistantText: null };
   try {
-    messages = extractUserMessages(fs.readFileSync(file, 'utf8'));
+    parsed = parseTranscript(fs.readFileSync(file, 'utf8'));
   } catch {
     // 読めなければ空
   }
-  const entry = { mtimeMs: st.mtimeMs, size: st.size, messages };
+  const entry = { mtimeMs: st.mtimeMs, size: st.size, ...parsed };
   transcriptCache.set(file, entry);
   return entry;
 }
@@ -62,9 +66,9 @@ function readTranscript(file) {
 /** @type {Map<string, {at:number, value:any, pending:boolean}>} */
 const gitCache = new Map();
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, timeout = 5000) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { cwd, timeout: 5000 }, (err, stdout) => resolve(err ? null : stdout));
+    execFile(cmd, args, { cwd, timeout }, (err, stdout) => resolve(err ? null : stdout));
   });
 }
 
@@ -85,6 +89,31 @@ function gitInfo(cwd) {
     });
   }
   return gitCache.get(cwd).value;
+}
+
+// ---- PR（gh CLI） ------------------------------------------------------------
+/** @type {Map<string, {at:number, ttl:number, value:any, pending:boolean}>} */
+const prCache = new Map();
+
+/** 作業ブランチに紐づく PR を返す。gh が無い・未ログインなら null のまま */
+function prInfo(cwd, branch) {
+  if (!cwd || !branch || isTrunkBranch(branch)) return null;
+  const key = `${cwd}\0${branch}`;
+  const hit = prCache.get(key);
+  if (!hit || (!hit.pending && Date.now() - hit.at > hit.ttl)) {
+    const entry = { at: Date.now(), ttl: hit?.ttl ?? 0, value: hit?.value ?? null, pending: true };
+    prCache.set(key, entry);
+    run('gh', ['pr', 'list', '--head', branch, '--state', 'all', '--limit', '1', '--json', 'number,url,state,isDraft,title'], cwd, 15000).then(
+      (out) => {
+        // 取得に失敗したときは前回の値を残す
+        if (out !== null) entry.value = parsePrList(out);
+        entry.ttl = prCacheTtl(entry.value);
+        entry.at = Date.now();
+        entry.pending = false;
+      },
+    );
+  }
+  return prCache.get(key).value;
 }
 
 // ---- Haiku での要約 ----------------------------------------------------------
@@ -149,6 +178,12 @@ function pumpSummaries() {
   child.stdin.end(buildSummaryPrompt(job.messages));
 }
 
+/** 長い発言の末尾だけを残す */
+function tail(text, max) {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `…${flat.slice(-max)}` : flat;
+}
+
 // ---- スナップショット ------------------------------------------------------------
 function readStates() {
   const out = [];
@@ -175,7 +210,7 @@ function snapshot() {
     if (!isVisible(s, now)) continue;
     const t = readTranscript(s.transcriptPath);
     const lastActivityMs = Math.max(Date.parse(s.lastEventAt) || 0, t.mtimeMs || 0);
-    const status = displayStatus(s, lastActivityMs, now);
+    const status = displayStatus(s, lastActivityMs, now, t.lastAssistantText);
     const git = gitInfo(s.cwd);
     requestSummary(s.sessionId, t.messages);
     const lastMsg = t.messages.at(-1);
@@ -184,17 +219,21 @@ function snapshot() {
       project: projectName(s.cwd),
       cwd: s.cwd,
       status,
+      // 実行許可・質問は札に添える。発言で判定した返事待ちは 'reply'
       waitingReason: status === 'waiting' ? s.waitingReason : null,
       statusSince: s.statusSince,
       lastActivityAt: new Date(lastActivityMs).toISOString(),
       startedAt: s.startedAt,
       summary: summaries[s.sessionId]?.text || null,
       lastPrompt: lastMsg ? lastMsg.text.slice(0, 200) : null,
+      // 返事待ちのとき、何を聞かれているかを見せるため Claude の最後の発言の末尾を渡す
+      lastAssistantTail: status === 'waiting' && t.lastAssistantText ? tail(t.lastAssistantText, 160) : null,
       promptCount: t.messages.length,
       recentSkills: s.recentSkills ?? [],
       lastTool: s.lastTool ?? null,
       git,
-      closable: isClosable(status, s.waitingReason, git),
+      pr: git ? prInfo(s.cwd, git.branch) : null,
+      closable: isClosable(status, git),
     });
   }
   return { generatedAt: new Date(now).toISOString(), sessions: sortSessions(sessions) };
