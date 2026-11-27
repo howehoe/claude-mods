@@ -149,3 +149,103 @@ export function projectName(cwd) {
   if (m) return `${m[1]} / ${m[2]}`;
   return path.basename(cwd);
 }
+
+// ---- PR -------------------------------------------------------------------
+// PR を作らない（作業の土台になる）ブランチ
+const TRUNK_BRANCHES = new Set(['main', 'master', 'develop', 'HEAD']);
+
+export function isTrunkBranch(branch) {
+  return TRUNK_BRANCHES.has(branch);
+}
+
+/**
+ * `gh pr list --json number,url,state,isDraft,title` の出力から、カードに出す PR を取り出す
+ * @returns {{number:number, url:string, state:'OPEN'|'DRAFT'|'MERGED'|'CLOSED', title:string} | null}
+ */
+export function parsePrList(stdout) {
+  let list;
+  try {
+    list = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const pr = Array.isArray(list) ? list[0] : null;
+  if (!pr?.url) return null;
+  const state = pr.state === 'OPEN' && pr.isDraft ? 'DRAFT' : pr.state;
+  return { number: pr.number, url: pr.url, state, title: pr.title ?? '' };
+}
+
+/**
+ * PR 情報を取り直すまでの間隔
+ * まだ PR が無いブランチは、作られたらすぐ出したいので短めに見る。
+ * マージ・クローズ済みはもう変わらないので長めにする。
+ */
+export function prCacheTtl(pr) {
+  if (!pr) return 30 * 1000;
+  if (pr.state === 'MERGED' || pr.state === 'CLOSED') return 10 * 60 * 1000;
+  return 2 * 60 * 1000;
+}
+
+// ---- チケット（Notion） ----------------------------------------------------------
+const NOTION_URL_RE = /https:\/\/(?:www\.)?notion\.(?:so|site)\/[^\s"'<>()（）`\]]+/g;
+
+/** Notion の URL からページ（または DB）の ID を取り出す。ID はパスの末尾の 32 桁の 16 進数 */
+export function notionIdFromUrl(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  // DB からページをプレビューで開いた URL（?p=<ページ ID>）はそのページを指す
+  const peek = u.searchParams.get('p');
+  if (peek && /^[0-9a-f]{32}$/i.test(peek)) return peek.toLowerCase();
+  const last = u.pathname.split('/').filter(Boolean).pop() ?? '';
+  const m = last.replace(/-/g, '').match(/([0-9a-f]{32})$/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** 表示用に ?pvs=4 や ?source=copy_link などの付属パラメータを落とす（DB ビューの ?v= は残す） */
+export function cleanNotionUrl(url) {
+  try {
+    const u = new URL(url);
+    const keep = new URLSearchParams();
+    for (const k of ['v', 'p']) if (u.searchParams.get(k)) keep.set(k, u.searchParams.get(k));
+    u.search = keep.toString() ? `?${keep}` : '';
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * 人の発言から Notion の URL を、最初に出てきた順・ページ単位で重複を除いて取り出す
+ * @returns {{id:string, url:string}[]}
+ */
+export function extractTicketUrls(messages, max = 3) {
+  const out = [];
+  const seen = new Set();
+  for (const m of messages) {
+    for (const raw of m.text.match(NOTION_URL_RE) ?? []) {
+      const url = raw.replace(/[.,、。]+$/, '');
+      const id = notionIdFromUrl(url);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id, url: cleanNotionUrl(url) });
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+
+/** Notion API（pages / databases）のレスポンスからタイトルを取り出す */
+export function notionTitle(json) {
+  const plain = (arr) => (Array.isArray(arr) ? arr.map((t) => t.plain_text ?? '').join('').trim() : '');
+  if (json?.object === 'database' || json?.object === 'data_source') return plain(json.title) || null;
+  const props = json?.properties ?? {};
+  for (const p of Object.values(props)) {
+    if (p?.type === 'title') return plain(p.title) || null;
+  }
+  return null;
+}

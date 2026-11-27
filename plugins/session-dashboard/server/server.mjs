@@ -16,7 +16,12 @@ import {
   displayStatus,
   parseTranscript,
   isClosable,
+  extractTicketUrls,
+  isTrunkBranch,
+  notionTitle,
   isVisible,
+  parsePrList,
+  prCacheTtl,
   projectName,
   sortSessions,
 } from './lib.mjs';
@@ -63,9 +68,9 @@ function readTranscript(file) {
 /** @type {Map<string, {at:number, value:any, pending:boolean}>} */
 const gitCache = new Map();
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, timeout = 5000) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { cwd, timeout: 5000 }, (err, stdout) => resolve(err ? null : stdout));
+    execFile(cmd, args, { cwd, timeout }, (err, stdout) => resolve(err ? null : stdout));
   });
 }
 
@@ -86,6 +91,114 @@ function gitInfo(cwd) {
     });
   }
   return gitCache.get(cwd).value;
+}
+
+// ---- チケット名（Notion API） --------------------------------------------------
+// トークンは環境変数か、権限 600 のファイル（$CC_DASHBOARD_DIR/notion-token）で渡す。無ければ URL だけ表示する
+const TICKET_FILE = path.join(BASE_DIR, 'tickets.json');
+const TICKET_RETRY_MS = 10 * 60 * 1000;
+
+function notionToken() {
+  const env = process.env.CC_DASHBOARD_NOTION_TOKEN || process.env.NOTION_TOKEN;
+  if (env) return env.trim();
+  try {
+    return fs.readFileSync(path.join(BASE_DIR, 'notion-token'), 'utf8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** @type {Record<string, {title:string|null, at:number}>} */
+let tickets = {};
+try {
+  tickets = JSON.parse(fs.readFileSync(TICKET_FILE, 'utf8'));
+} catch {
+  tickets = {};
+}
+const ticketPending = new Set();
+
+/**
+ * Notion API を curl で呼ぶ。Node の fetch は社内プロキシの証明書を信頼せず失敗する環境があるため、
+ * OS の証明書ストアを使う curl に任せる。トークンが ps に出ないよう、ヘッダーは標準入力の設定で渡す。
+ * @returns {Promise<{status:number, body:string}|null>}
+ */
+function curlNotion(apiPath, token) {
+  return new Promise((resolve) => {
+    const child = spawn('curl', ['-s', '-K', '-', '-w', '\n%{http_code}', `https://api.notion.com/v1/${apiPath}`], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.on('error', () => resolve(null));
+    child.on('close', () => {
+      const i = out.lastIndexOf('\n');
+      const status = Number(out.slice(i + 1));
+      resolve(status ? { status, body: out.slice(0, i) } : null);
+    });
+    child.stdin.end(
+      [`header = "Authorization: Bearer ${token}"`, 'header = "Notion-Version: 2022-06-28"', 'max-time = 10', ''].join('\n'),
+    );
+  });
+}
+
+async function fetchNotionTitle(id, token) {
+  // ページで見つからなければ DB として引き直す
+  for (const kind of ['pages', 'databases']) {
+    const res = await curlNotion(`${kind}/${id}`, token);
+    if (!res) return null;
+    if (res.status === 200) return notionTitle(JSON.parse(res.body));
+    if (res.status !== 404 && res.status !== 400) return null;
+  }
+  return null;
+}
+
+/** チケットの表示用データ。タイトルは取れたものから順に埋まる */
+function ticketInfo(list) {
+  const token = notionToken();
+  return list.map(({ id, url }) => {
+    const hit = tickets[id];
+    const stale = !hit || (!hit.title && Date.now() - hit.at > TICKET_RETRY_MS);
+    if (token && stale && !ticketPending.has(id)) {
+      ticketPending.add(id);
+      fetchNotionTitle(id, token)
+        .catch(() => null)
+        .then((title) => {
+          tickets[id] = { title, at: Date.now() };
+          ticketPending.delete(id);
+          try {
+            fs.writeFileSync(TICKET_FILE, JSON.stringify(tickets, null, 2));
+          } catch {
+            // 保存できなくても表示は続ける
+          }
+        });
+    }
+    return { url, title: tickets[id]?.title ?? null };
+  });
+}
+
+// ---- PR（gh CLI） ------------------------------------------------------------
+/** @type {Map<string, {at:number, ttl:number, value:any, pending:boolean}>} */
+const prCache = new Map();
+
+/** 作業ブランチに紐づく PR を返す。gh が無い・未ログインなら null のまま */
+function prInfo(cwd, branch) {
+  if (!cwd || !branch || isTrunkBranch(branch)) return null;
+  const key = `${cwd}\0${branch}`;
+  const hit = prCache.get(key);
+  if (!hit || (!hit.pending && Date.now() - hit.at > hit.ttl)) {
+    const entry = { at: Date.now(), ttl: hit?.ttl ?? 0, value: hit?.value ?? null, pending: true };
+    prCache.set(key, entry);
+    run('gh', ['pr', 'list', '--head', branch, '--state', 'all', '--limit', '1', '--json', 'number,url,state,isDraft,title'], cwd, 15000).then(
+      (out) => {
+        // 取得に失敗したときは前回の値を残す
+        if (out !== null) entry.value = parsePrList(out);
+        entry.ttl = prCacheTtl(entry.value);
+        entry.at = Date.now();
+        entry.pending = false;
+      },
+    );
+  }
+  return prCache.get(key).value;
 }
 
 // ---- Haiku での要約 ----------------------------------------------------------
@@ -201,9 +314,11 @@ function snapshot() {
       // 返事待ちのとき、何を聞かれているかを見せるため Claude の最後の発言の末尾を渡す
       lastAssistantTail: status === 'waiting' && t.lastAssistantText ? tail(t.lastAssistantText, 160) : null,
       promptCount: t.messages.length,
+      tickets: ticketInfo(extractTicketUrls(t.messages)),
       recentSkills: s.recentSkills ?? [],
       lastTool: s.lastTool ?? null,
       git,
+      pr: git ? prInfo(s.cwd, git.branch) : null,
       closable: isClosable(status, git),
     });
   }

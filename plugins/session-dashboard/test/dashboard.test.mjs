@@ -8,7 +8,13 @@ import {
   extractUserMessages,
   isAskingUser,
   isClosable,
+  parsePrList,
   parseTranscript,
+  prCacheTtl,
+  isTrunkBranch,
+  extractTicketUrls,
+  notionIdFromUrl,
+  notionTitle,
   projectName,
 } from '../server/lib.mjs';
 
@@ -118,4 +124,52 @@ test('要約プロンプトは最初の 1 件と直近 11 件', () => {
 test('worktree はリポジトリ名付きで表示', () => {
   assert.equal(projectName('/a/repo/.claude/worktrees/feat-x'), 'repo / feat-x');
   assert.equal(projectName('/a/repo'), 'repo');
+});
+
+test('gh pr list の出力から PR を取り出す', () => {
+  const out = (o) => JSON.stringify([{ number: 6, url: 'https://github.com/a/b/pull/6', state: 'OPEN', isDraft: false, title: 't', ...o }]);
+  assert.deepEqual(parsePrList(out()), { number: 6, url: 'https://github.com/a/b/pull/6', state: 'OPEN', title: 't' });
+  assert.equal(parsePrList(out({ isDraft: true })).state, 'DRAFT');
+  assert.equal(parsePrList(out({ state: 'MERGED' })).state, 'MERGED');
+  assert.equal(parsePrList('[]'), null);
+  assert.equal(parsePrList('not json'), null);
+});
+
+test('PR が無いブランチは短い間隔で見直す', () => {
+  assert.ok(prCacheTtl(null) < prCacheTtl({ state: 'OPEN' }));
+  assert.ok(prCacheTtl({ state: 'OPEN' }) < prCacheTtl({ state: 'MERGED' }));
+});
+
+test('main / develop では PR を探さない', () => {
+  assert.equal(isTrunkBranch('develop'), true);
+  assert.equal(isTrunkBranch('feature/x'), false);
+});
+
+test('Notion の URL から ID を取り出す', () => {
+  const id = '2cbd89fdd946802eac3adcad8ea389a6';
+  assert.equal(notionIdFromUrl(`https://www.notion.so/asuene/DB-${id}?source=copy_link`), id);
+  assert.equal(notionIdFromUrl(`https://www.notion.so/${id}`), id);
+  assert.equal(notionIdFromUrl('https://www.notion.so/asuene/2cbd89fd-d946-802e-ac3a-dcad8ea389a6'), id);
+  assert.equal(notionIdFromUrl(`https://www.notion.so/asuene/aaaabbbbccccddddeeeeffff00001111?v=1&p=${id}`), id);
+  assert.equal(notionIdFromUrl('https://www.notion.so/asuene'), null);
+});
+
+test('発言からチケット URL を重複なしで取り出す', () => {
+  const id1 = 'a6e15f1772a34bf886d5bdd73442de36';
+  const id2 = '5f59b155f22546a0a86480543edc6079';
+  const msgs = [
+    { text: `これやって https://www.notion.so/asuene/QA-${id2}?pvs=4。` },
+    { text: `https://www.notion.so/asuene/${id1}（参考）と https://www.notion.so/asuene/QA-${id2}?source=copy_link` },
+  ];
+  assert.deepEqual(extractTicketUrls(msgs), [
+    { id: id2, url: `https://www.notion.so/asuene/QA-${id2}` },
+    { id: id1, url: `https://www.notion.so/asuene/${id1}` },
+  ]);
+});
+
+test('Notion API のレスポンスからタイトルを取り出す', () => {
+  const page = { object: 'page', properties: { 状態: { type: 'status' }, 名前: { type: 'title', title: [{ plain_text: '【UX】' }, { plain_text: 'ボタン修正' }] } } };
+  assert.equal(notionTitle(page), '【UX】ボタン修正');
+  assert.equal(notionTitle({ object: 'database', title: [{ plain_text: '開発チケット' }] }), '開発チケット');
+  assert.equal(notionTitle({ object: 'page', properties: {} }), null);
 });
