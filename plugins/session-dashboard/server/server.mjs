@@ -341,6 +341,16 @@ function broadcast() {
 
 const INDEX = path.join(HERE, 'public', 'index.html');
 
+// 配る静的ファイルはこの一覧に載せたものだけ（パスをそのままファイル名に使うので、一覧外は読まない）
+const STATIC_FILES = {
+  '/icon.svg': 'image/svg+xml',
+  '/icon-192.png': 'image/png',
+  '/icon-512.png': 'image/png',
+  '/apple-touch-icon.png': 'image/png',
+  '/favicon-32.png': 'image/png',
+  '/manifest.webmanifest': 'application/manifest+json',
+};
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/') {
@@ -364,8 +374,11 @@ const server = http.createServer((req, res) => {
     req.on('close', () => clients.delete(res));
     return;
   }
-  if (url.pathname === '/favicon.ico') {
-    res.writeHead(204).end();
+  // アイコンとマニフェスト（ブックマーク・アプリとしてインストール用）
+  const asset = STATIC_FILES[url.pathname === '/favicon.ico' ? '/favicon-32.png' : url.pathname];
+  if (asset) {
+    res.writeHead(200, { 'content-type': asset, 'cache-control': 'public, max-age=86400' });
+    fs.createReadStream(path.join(HERE, 'public', url.pathname === '/favicon.ico' ? 'favicon-32.png' : url.pathname.slice(1))).pipe(res);
     return;
   }
   res.writeHead(404).end('not found');
