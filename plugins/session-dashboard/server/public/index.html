@@ -65,7 +65,7 @@
   <div class="counts" id="counts"></div>
   <div class="spacer"></div>
   <button id="sound" type="button">🔇 クリックで通知音を有効化</button>
-  <span class="conn" id="conn">接続中…</span>
+  <span class="conn" id="conn">サーバーに接続しています…</span>
 </header>
 <main id="list"><div class="empty">読み込み中…</div></main>
 
@@ -125,7 +125,7 @@
     document.title = counts.waiting ? `(${counts.waiting}) Claude Sessions` : 'Claude Sessions';
 
     if (!sessions.length) {
-      list.innerHTML = '<div class="empty">表示するセッションがありません</div>';
+      list.innerHTML = '<div class="empty">表示するセッションがありません。<br>session-dashboard プラグインを入れた後に起動したセッションが、ここに表示されます。</div>';
       return;
     }
     list.innerHTML = sessions.map((s) => {
@@ -172,7 +172,7 @@
   // ---- SSE ----
   const conn = document.getElementById('conn');
   const es = new EventSource('/events');
-  es.onopen = () => { conn.textContent = '接続中'; conn.classList.remove('down'); };
+  es.onopen = () => { conn.textContent = '● 接続済み'; conn.classList.remove('down'); };
   es.onerror = () => { conn.textContent = '切断（再接続中）'; conn.classList.add('down'); };
   es.onmessage = (ev) => onSnapshot(JSON.parse(ev.data));
 
