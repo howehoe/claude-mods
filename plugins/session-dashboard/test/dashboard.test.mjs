@@ -8,7 +8,10 @@ import {
   extractUserMessages,
   isAskingUser,
   isClosable,
+  parsePrList,
   parseTranscript,
+  prCacheTtl,
+  isTrunkBranch,
   projectName,
 } from '../server/lib.mjs';
 
@@ -118,4 +121,23 @@ test('要約プロンプトは最初の 1 件と直近 11 件', () => {
 test('worktree はリポジトリ名付きで表示', () => {
   assert.equal(projectName('/a/repo/.claude/worktrees/feat-x'), 'repo / feat-x');
   assert.equal(projectName('/a/repo'), 'repo');
+});
+
+test('gh pr list の出力から PR を取り出す', () => {
+  const out = (o) => JSON.stringify([{ number: 6, url: 'https://github.com/a/b/pull/6', state: 'OPEN', isDraft: false, title: 't', ...o }]);
+  assert.deepEqual(parsePrList(out()), { number: 6, url: 'https://github.com/a/b/pull/6', state: 'OPEN', title: 't' });
+  assert.equal(parsePrList(out({ isDraft: true })).state, 'DRAFT');
+  assert.equal(parsePrList(out({ state: 'MERGED' })).state, 'MERGED');
+  assert.equal(parsePrList('[]'), null);
+  assert.equal(parsePrList('not json'), null);
+});
+
+test('PR が無いブランチは短い間隔で見直す', () => {
+  assert.ok(prCacheTtl(null) < prCacheTtl({ state: 'OPEN' }));
+  assert.ok(prCacheTtl({ state: 'OPEN' }) < prCacheTtl({ state: 'MERGED' }));
+});
+
+test('main / develop では PR を探さない', () => {
+  assert.equal(isTrunkBranch('develop'), true);
+  assert.equal(isTrunkBranch('feature/x'), false);
 });

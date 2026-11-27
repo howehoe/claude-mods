@@ -149,3 +149,39 @@ export function projectName(cwd) {
   if (m) return `${m[1]} / ${m[2]}`;
   return path.basename(cwd);
 }
+
+// ---- PR -------------------------------------------------------------------
+// PR を作らない（作業の土台になる）ブランチ
+const TRUNK_BRANCHES = new Set(['main', 'master', 'develop', 'HEAD']);
+
+export function isTrunkBranch(branch) {
+  return TRUNK_BRANCHES.has(branch);
+}
+
+/**
+ * `gh pr list --json number,url,state,isDraft,title` の出力から、カードに出す PR を取り出す
+ * @returns {{number:number, url:string, state:'OPEN'|'DRAFT'|'MERGED'|'CLOSED', title:string} | null}
+ */
+export function parsePrList(stdout) {
+  let list;
+  try {
+    list = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const pr = Array.isArray(list) ? list[0] : null;
+  if (!pr?.url) return null;
+  const state = pr.state === 'OPEN' && pr.isDraft ? 'DRAFT' : pr.state;
+  return { number: pr.number, url: pr.url, state, title: pr.title ?? '' };
+}
+
+/**
+ * PR 情報を取り直すまでの間隔
+ * まだ PR が無いブランチは、作られたらすぐ出したいので短めに見る。
+ * マージ・クローズ済みはもう変わらないので長めにする。
+ */
+export function prCacheTtl(pr) {
+  if (!pr) return 30 * 1000;
+  if (pr.state === 'MERGED' || pr.state === 'CLOSED') return 10 * 60 * 1000;
+  return 2 * 60 * 1000;
+}

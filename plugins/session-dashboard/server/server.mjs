@@ -16,7 +16,10 @@ import {
   displayStatus,
   parseTranscript,
   isClosable,
+  isTrunkBranch,
   isVisible,
+  parsePrList,
+  prCacheTtl,
   projectName,
   sortSessions,
 } from './lib.mjs';
@@ -63,9 +66,9 @@ function readTranscript(file) {
 /** @type {Map<string, {at:number, value:any, pending:boolean}>} */
 const gitCache = new Map();
 
-function run(cmd, args, cwd) {
+function run(cmd, args, cwd, timeout = 5000) {
   return new Promise((resolve) => {
-    execFile(cmd, args, { cwd, timeout: 5000 }, (err, stdout) => resolve(err ? null : stdout));
+    execFile(cmd, args, { cwd, timeout }, (err, stdout) => resolve(err ? null : stdout));
   });
 }
 
@@ -86,6 +89,31 @@ function gitInfo(cwd) {
     });
   }
   return gitCache.get(cwd).value;
+}
+
+// ---- PR（gh CLI） ------------------------------------------------------------
+/** @type {Map<string, {at:number, ttl:number, value:any, pending:boolean}>} */
+const prCache = new Map();
+
+/** 作業ブランチに紐づく PR を返す。gh が無い・未ログインなら null のまま */
+function prInfo(cwd, branch) {
+  if (!cwd || !branch || isTrunkBranch(branch)) return null;
+  const key = `${cwd}\0${branch}`;
+  const hit = prCache.get(key);
+  if (!hit || (!hit.pending && Date.now() - hit.at > hit.ttl)) {
+    const entry = { at: Date.now(), ttl: hit?.ttl ?? 0, value: hit?.value ?? null, pending: true };
+    prCache.set(key, entry);
+    run('gh', ['pr', 'list', '--head', branch, '--state', 'all', '--limit', '1', '--json', 'number,url,state,isDraft,title'], cwd, 15000).then(
+      (out) => {
+        // 取得に失敗したときは前回の値を残す
+        if (out !== null) entry.value = parsePrList(out);
+        entry.ttl = prCacheTtl(entry.value);
+        entry.at = Date.now();
+        entry.pending = false;
+      },
+    );
+  }
+  return prCache.get(key).value;
 }
 
 // ---- Haiku での要約 ----------------------------------------------------------
@@ -204,6 +232,7 @@ function snapshot() {
       recentSkills: s.recentSkills ?? [],
       lastTool: s.lastTool ?? null,
       git,
+      pr: git ? prInfo(s.cwd, git.branch) : null,
       closable: isClosable(status, git),
     });
   }

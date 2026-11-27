@@ -57,6 +57,16 @@
   .ask { font-size: 12px; color: var(--waiting); background: var(--waiting-bg); border-radius: 6px; padding: 4px 8px; word-break: break-all; }
   .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
   .meta .late { color: var(--late); font-weight: 600; }
+  .pr { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; font-size: 13px; text-decoration: none; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; max-width: 100%; }
+  .pr:hover { border-color: var(--muted); }
+  .pr .num { font-weight: 600; white-space: nowrap; }
+  .pr .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .pr .st { font-size: 11px; font-weight: 600; border-radius: 999px; padding: 0 6px; white-space: nowrap; }
+  .pr .st.OPEN { color: var(--ok); background: var(--ok-bg); }
+  .pr .st.DRAFT { color: var(--idle); background: var(--idle-bg); }
+  .pr .st.MERGED { color: var(--stalled); background: var(--stalled-bg); }
+  .pr .st.CLOSED { color: var(--late); background: var(--waiting-bg); }
   .skills span { border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-right: 4px; }
   .actions { display: flex; gap: 8px; font-size: 12px; }
   .actions a { color: var(--muted); }
@@ -78,6 +88,7 @@
   const LATE_MS = 30 * 60 * 1000; // 返事待ちがこれを超えたら赤くする
   const LABEL = { waiting: '返事待ち', done: '指示待ち', working: '作業中', stalled: '応答なし', idle: '待機', ended: '終了' };
   const REASON = { permission: '実行許可', question: '質問' };
+  const PR_STATE = { OPEN: 'Open', DRAFT: 'Draft', MERGED: 'Merged', CLOSED: 'Closed' };
 
   let sessions = [];
   let prevStatus = null; // sessionId -> status（初回は鳴らさない）
@@ -123,6 +134,16 @@
     return `${h}時間${m % 60}分`;
   }
 
+  function prLink(pr) {
+    // gh が返す URL 以外のスキームは出さない
+    if (!pr || !/^https:\/\//.test(pr.url)) return '';
+    return `<a class="pr" href="${esc(pr.url)}" target="_blank" rel="noopener" title="${esc(pr.title)}">
+      <span class="num">PR #${esc(pr.number)}</span>
+      <span class="st ${esc(pr.state)}">${PR_STATE[pr.state] ?? esc(pr.state)}</span>
+      <span class="title">${esc(pr.title)}</span>
+    </a>`;
+  }
+
   function render() {
     const list = document.getElementById('list');
     const counts = { waiting: 0, done: 0, working: 0, stalled: 0 };
@@ -155,6 +176,7 @@
         </div>
         ${summary}
         ${s.lastAssistantTail ? `<div class="ask">💬 ${esc(s.lastAssistantTail)}</div>` : ''}
+        ${prLink(s.pr)}
         <div class="meta">
           <span class="${late ? 'late' : ''}">${LABEL[s.status]} ${ago(s.statusSince)}</span>
           ${git}
