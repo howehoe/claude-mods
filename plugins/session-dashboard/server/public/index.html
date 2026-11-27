@@ -52,11 +52,14 @@
   .badge.done { color: var(--done); background: var(--done-bg); }
   .badge.idle, .badge.ended { color: var(--idle); background: var(--idle-bg); }
   .badge.ok { color: var(--ok); background: var(--ok-bg); }
-  .summary { font-size: 14px; }
+  .summary { font-size: 14px; overflow-wrap: anywhere; }
   .summary.fallback { color: var(--muted); }
   .ask { font-size: 12px; color: var(--waiting); background: var(--waiting-bg); border-radius: 6px; padding: 4px 8px; word-break: break-all; }
   .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
   .meta .late { color: var(--late); font-weight: 600; }
+  .tickets { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+  .tickets div { word-break: break-all; }
+  .tickets a { color: var(--muted); }
   .pr { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; font-size: 13px; text-decoration: none; color: var(--text);
     border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; max-width: 100%; }
   .pr:hover { border-color: var(--muted); }
@@ -134,6 +137,16 @@
     return `${h}時間${m % 60}分`;
   }
 
+  // チケット名（URL）の形式で並べる。名前が取れていなければ URL だけ
+  function ticketList(tickets) {
+    const list = (tickets ?? []).filter((t) => /^https:\/\//.test(t.url));
+    if (!list.length) return '';
+    return `<div class="tickets">${list.map((t) => {
+      const link = `<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.url)}</a>`;
+      return `<div>🎫 ${t.title ? `${esc(t.title)}（${link}）` : link}</div>`;
+    }).join('')}</div>`;
+  }
+
   function prLink(pr) {
     // gh が返す URL 以外のスキームは出さない
     if (!pr || !/^https:\/\//.test(pr.url)) return '';
@@ -176,6 +189,7 @@
         </div>
         ${summary}
         ${s.lastAssistantTail ? `<div class="ask">💬 ${esc(s.lastAssistantTail)}</div>` : ''}
+        ${ticketList(s.tickets)}
         ${prLink(s.pr)}
         <div class="meta">
           <span class="${late ? 'late' : ''}">${LABEL[s.status]} ${ago(s.statusSince)}</span>
