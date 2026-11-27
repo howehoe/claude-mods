@@ -2,7 +2,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { reduce } from '../bin/record.mjs';
-import { displayStatus, extractUserMessages, isClosable, buildSummaryPrompt, projectName } from '../server/lib.mjs';
+import {
+  buildSummaryPrompt,
+  displayStatus,
+  extractUserMessages,
+  isAskingUser,
+  isClosable,
+  parseTranscript,
+  projectName,
+} from '../server/lib.mjs';
 
 const base = { session_id: 's1', cwd: '/repo', transcript_path: '/t.jsonl' };
 const step = (prev, ev, extra = {}) => reduce(prev, { ...base, hook_event_name: ev, ...extra });
@@ -60,11 +68,44 @@ test('人の発言だけを取り出す', () => {
 });
 
 test('閉じてよい判定', () => {
-  assert.equal(isClosable('waiting', 'reply', { dirty: 0 }), true);
-  assert.equal(isClosable('waiting', 'reply', { dirty: 2 }), false);
-  assert.equal(isClosable('waiting', 'permission', { dirty: 0 }), false);
-  assert.equal(isClosable('working', null, { dirty: 0 }), false);
-  assert.equal(isClosable('ended', null, { dirty: 3 }), true);
+  assert.equal(isClosable('done', { dirty: 0 }), true);
+  assert.equal(isClosable('done', { dirty: 2 }), false);
+  assert.equal(isClosable('done', null), true);
+  assert.equal(isClosable('waiting', { dirty: 0 }), false);
+  assert.equal(isClosable('working', { dirty: 0 }), false);
+  assert.equal(isClosable('ended', { dirty: 3 }), true);
+});
+
+test('ターン終了後: 聞かれていれば返事待ち、そうでなければ指示待ち', () => {
+  const now = Date.now();
+  const st = (waitingReason) => ({ status: 'waiting', waitingReason });
+  assert.equal(displayStatus(st('reply'), now, now, 'PR を作りました。'), 'done');
+  assert.equal(displayStatus(st('reply'), now, now, 'どちらで進めますか？'), 'waiting');
+  assert.equal(displayStatus(st('reply'), now, now, null), 'done');
+  assert.equal(displayStatus(st('permission'), now, now, 'PR を作りました。'), 'waiting');
+  assert.equal(displayStatus(st('question'), now, now, null), 'waiting');
+  assert.equal(displayStatus(st('idle'), now, now, null), 'idle');
+});
+
+test('末尾が質問・依頼なら返事を求めているとみなす', () => {
+  assert.equal(isAskingUser('修正しました。\nテストも通っています。'), false);
+  assert.equal(isAskingUser('置き場所は A でいいですか？'), true);
+  assert.equal(isAskingUser('2 案あります。どちらにするか決めてください'), true);
+  assert.equal(isAskingUser('この方針で進めてよいか確認させてください。'), true);
+  // 途中の疑問文は見ない
+  assert.equal(isAskingUser('「なぜ落ちる？」を調べました。\n原因は A でした。\n修正済みです。\nPR を出しました。'), false);
+});
+
+test('Claude の最後の発言は、人がその後に発言したら消える', () => {
+  const rows = [
+    { type: 'user', origin: { kind: 'human' }, message: { content: '直して' } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: '直しました。' }] } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } },
+  ];
+  const text = (rs) => rs.map((r) => JSON.stringify(r)).join('\n');
+  assert.equal(parseTranscript(text(rows)).lastAssistantText, '直しました。');
+  rows.push({ type: 'user', origin: { kind: 'human' }, message: { content: '次これ' } });
+  assert.equal(parseTranscript(text(rows)).lastAssistantText, null);
 });
 
 test('要約プロンプトは最初の 1 件と直近 11 件', () => {
