@@ -11,6 +11,7 @@
     --working: #1c7ed6; --working-bg: #e7f3ff;
     --stalled: #ae3ec9; --stalled-bg: #f8eefc;
     --idle: #868e96; --idle-bg: #f1f3f5;
+    --done: #2f9e9e; --done-bg: #e6f7f7;
     --ok: #2b8a3e; --ok-bg: #ebfbee; --late: #e03131;
   }
   @media (prefers-color-scheme: dark) {
@@ -20,6 +21,7 @@
       --working: #5aa9f0; --working-bg: #16283a;
       --stalled: #d68cf0; --stalled-bg: #2f1c36;
       --idle: #9aa1a8; --idle-bg: #2a2c2e;
+      --done: #63d3d3; --done-bg: #173030;
       --ok: #69db7c; --ok-bg: #18301d; --late: #ff6b6b;
     }
   }
@@ -39,6 +41,7 @@
   .card.waiting { border-left-color: var(--waiting); }
   .card.working { border-left-color: var(--working); }
   .card.stalled { border-left-color: var(--stalled); }
+  .card.done { border-left-color: var(--done); }
   .card.ended { opacity: .55; }
   .top { display: flex; align-items: flex-start; gap: 8px; }
   .project { font-weight: 600; word-break: break-all; flex: 1; }
@@ -46,10 +49,12 @@
   .badge.waiting { color: var(--waiting); background: var(--waiting-bg); }
   .badge.working { color: var(--working); background: var(--working-bg); }
   .badge.stalled { color: var(--stalled); background: var(--stalled-bg); }
+  .badge.done { color: var(--done); background: var(--done-bg); }
   .badge.idle, .badge.ended { color: var(--idle); background: var(--idle-bg); }
   .badge.ok { color: var(--ok); background: var(--ok-bg); }
   .summary { font-size: 14px; }
   .summary.fallback { color: var(--muted); }
+  .ask { font-size: 12px; color: var(--waiting); background: var(--waiting-bg); border-radius: 6px; padding: 4px 8px; word-break: break-all; }
   .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
   .meta .late { color: var(--late); font-weight: 600; }
   .skills span { border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-right: 4px; }
@@ -71,8 +76,8 @@
 
 <script>
   const LATE_MS = 30 * 60 * 1000; // 返事待ちがこれを超えたら赤くする
-  const LABEL = { waiting: '返事待ち', working: '作業中', stalled: '止まっている', idle: '待機', ended: '終了' };
-  const REASON = { permission: '実行許可', question: '質問', reply: '', idle: '' };
+  const LABEL = { waiting: '返事待ち', done: '指示待ち', working: '作業中', stalled: '応答なし', idle: '待機', ended: '終了' };
+  const REASON = { permission: '実行許可', question: '質問' };
 
   let sessions = [];
   let prevStatus = null; // sessionId -> status（初回は鳴らさない）
@@ -86,10 +91,12 @@
     soundBtn.textContent = '🔔 通知音 ON';
     beep();
   });
-  function beep() {
+  // 返事待ちは高い 2 音、指示待ちは低い 1 音
+  function beep(kind = 'waiting') {
     if (!audio || audio.state !== 'running') return;
     const t = audio.currentTime;
-    [880, 1320].forEach((freq, i) => {
+    const notes = kind === 'waiting' ? [880, 1320] : [660];
+    notes.forEach((freq, i) => {
       const osc = audio.createOscillator();
       const gain = audio.createGain();
       osc.frequency.value = freq;
@@ -118,10 +125,10 @@
 
   function render() {
     const list = document.getElementById('list');
-    const counts = { waiting: 0, working: 0, stalled: 0 };
+    const counts = { waiting: 0, done: 0, working: 0, stalled: 0 };
     sessions.forEach((s) => { if (s.status in counts) counts[s.status]++; });
     document.getElementById('counts').innerHTML =
-      `<span>返事待ち <b>${counts.waiting}</b></span><span>作業中 <b>${counts.working}</b></span><span>止まっている <b>${counts.stalled}</b></span>`;
+      `<span>返事待ち <b>${counts.waiting}</b></span><span>指示待ち <b>${counts.done}</b></span><span>作業中 <b>${counts.working}</b></span><span>応答なし <b>${counts.stalled}</b></span>`;
     document.title = counts.waiting ? `(${counts.waiting}) Claude Sessions` : 'Claude Sessions';
 
     if (!sessions.length) {
@@ -147,6 +154,7 @@
           <span class="badge ${s.status}">${LABEL[s.status]}${reason}</span>
         </div>
         ${summary}
+        ${s.lastAssistantTail ? `<div class="ask">💬 ${esc(s.lastAssistantTail)}</div>` : ''}
         <div class="meta">
           <span class="${late ? 'late' : ''}">${LABEL[s.status]} ${ago(s.statusSince)}</span>
           ${git}
@@ -161,9 +169,10 @@
     sessions = snap.sessions;
     const next = Object.fromEntries(sessions.map((s) => [s.sessionId, s.status]));
     if (prevStatus) {
-      // 返事待ちに変わったセッションがあれば 1 回だけ鳴らす
-      const turned = sessions.some((s) => s.status === 'waiting' && prevStatus[s.sessionId] !== 'waiting');
-      if (turned) beep();
+      // 返事待ち・指示待ちに変わったセッションがあれば 1 回だけ鳴らす（返事待ちを優先）
+      const turned = (st) => sessions.some((s) => s.status === st && prevStatus[s.sessionId] !== st);
+      if (turned('waiting')) beep('waiting');
+      else if (turned('done')) beep('done');
     }
     prevStatus = next;
     render();
