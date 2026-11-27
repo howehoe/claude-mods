@@ -11,18 +11,28 @@ const POLL_MS = 3000
 const memoAtom = atom({ plugin: 'session-memo', key: 'memo' } as const, EMPTY)
 const pathAtom = atom({ plugin: 'session-memo', key: 'path' } as const, '')
 
-let sessionId = ''
 // The file's text as last read or written, so a poll only redraws on an outside change
 let lastText: string | undefined
 
-async function relPath($: EngineInterface): Promise<string> {
-  if (!sessionId) sessionId = await $.session.id()
-  return `${DIR}/${sessionId}.md`
+// 保存先は最初に一度だけ絶対パスで決め、$.state に残す。
+// $.fs の相対パスはその時点の作業ディレクトリ基準なので、Bash の cd や EnterWorktree で
+// 作業ディレクトリが動くと別の場所を読んでしまい、メモが消えたように見えていた。
+// $.state はリロードやワークツリーへの移動（session.start の再実行）をまたいで残る。
+async function memoPath($: EngineInterface, cwd?: string): Promise<string> {
+  const pinned = await read($, pathAtom)
+  if (pinned) return pinned
+  const path = `${cwd ?? (await $.session.cwd())}/${DIR}/${await $.session.id()}.md`
+  await update($, pathAtom, () => path)
+  return path
 }
 
+const idOf = (path: string) => path.slice(path.lastIndexOf('/') + 1).replace(/\.md$/, '')
+
 async function load($: EngineInterface): Promise<void> {
-  const path = await relPath($)
-  const text = (await $.fs.exists(path)) ? await $.fs.read(path) : ''
+  const path = await memoPath($)
+  // ファイルが見つからないときは表示中のメモを空で上書きしない（次の保存で作り直す）
+  if (!(await $.fs.exists(path))) return
+  const text = await $.fs.read(path)
   if (text === lastText) return
   lastText = text
   const memo = parse(text)
@@ -31,33 +41,32 @@ async function load($: EngineInterface): Promise<void> {
 
 async function save($: EngineInterface, change: (memo: Memo) => Memo): Promise<void> {
   await load($)
+  const path = await memoPath($)
   const memo = change(await read($, memoAtom))
-  const text = serialize(memo, sessionId)
-  await $.fs.write(await relPath($), text)
+  const text = serialize(memo, idOf(path))
+  await $.fs.write(path, text)
   lastText = text
   await update($, memoAtom, () => memo)
 }
 
 async function openRaw($: EngineInterface): Promise<string> {
-  const path = await relPath($)
+  const path = await memoPath($)
   if (!(await $.fs.exists(path))) await save($, memo => memo)
-  const abs = `${await $.session.cwd()}/${path}`
-  const opened = await $.process.run(['open', '-t', abs]).catch(() => undefined)
-  if (opened?.exitCode !== 0) await $.process.run(['xdg-open', abs]).catch(() => undefined)
-  return abs
+  const opened = await $.process.run(['open', '-t', path]).catch(() => undefined)
+  if (opened?.exitCode !== 0) await $.process.run(['xdg-open', path]).catch(() => undefined)
+  return path
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    sessionId = ''
     lastText = undefined
     await $.command.register({
       name: 'memo',
       description: 'Session memo: open the pane, `raw` for the .md file, `todo <text>` to add a TODO, `<text>` to add a memo',
       argumentHint: '[raw | todo <text> | <text>]',
     })
+    await memoPath($, e.cwd)
     await load($)
-    await update($, pathAtom, () => `${DIR}/${sessionId}.md`)
     $.clock.every(POLL_MS, () => {
       void load($).catch(() => undefined)
     })
@@ -98,7 +107,7 @@ export const register: Register = on => {
     return (
       <Box>
         <Text dimColor>
-          memo: TODO {open}/{memo.todos.length} · メモ {memo.memos.length}{' '}
+          memo: メモ {memo.memos.length} · TODO {open}/{memo.todos.length}{' '}
         </Text>
         <Button
           key="open-pane"
@@ -122,6 +131,28 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Text dimColor>{path}</Text>
+        <Text bold>メモ</Text>
+        {memo.memos.length === 0 && <Text dimColor>No memos yet.</Text>}
+        {memo.memos.map((text, i) => (
+          <Box>
+            <Text>- {text} </Text>
+            <Button
+              key={`memo-delete-${i}`}
+              label="削除"
+              onPress={() => save($, m => ({ ...m, memos: m.memos.filter((_, j) => j !== i) }))}
+            />
+          </Box>
+        ))}
+        {Input && <Input
+          key="memo-add"
+          label="メモ追記"
+          placeholder="新しいメモ"
+          onSubmit={(value: string) => {
+            const text = clean(value)
+            if (text) void save($, m => ({ ...m, memos: [...m.memos, text] }))
+          }}
+        />}
+        <Text> </Text>
         <Text bold>TODO</Text>
         {memo.todos.length === 0 && <Text dimColor>No TODOs yet.</Text>}
         {memo.todos.map((todo, i) => (
@@ -151,28 +182,6 @@ export const register: Register = on => {
           onSubmit={(value: string) => {
             const text = clean(value)
             if (text) void save($, m => ({ ...m, todos: [...m.todos, { text, isDone: false }] }))
-          }}
-        />}
-        <Text> </Text>
-        <Text bold>メモ</Text>
-        {memo.memos.length === 0 && <Text dimColor>No memos yet.</Text>}
-        {memo.memos.map((text, i) => (
-          <Box>
-            <Text>- {text} </Text>
-            <Button
-              key={`memo-delete-${i}`}
-              label="削除"
-              onPress={() => save($, m => ({ ...m, memos: m.memos.filter((_, j) => j !== i) }))}
-            />
-          </Box>
-        ))}
-        {Input && <Input
-          key="memo-add"
-          label="メモ追記"
-          placeholder="新しいメモ"
-          onSubmit={(value: string) => {
-            const text = clean(value)
-            if (text) void save($, m => ({ ...m, memos: [...m.memos, text] }))
           }}
         />}
       </Box>
