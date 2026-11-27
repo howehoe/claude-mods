@@ -26,7 +26,7 @@ export function parse(text: string): Memo {
 export function serialize(memo: Memo, sessionId: string): string {
   const todos = memo.todos.map(t => `- [${t.isDone ? 'x' : ' '}] ${t.text}`)
   const memos = memo.memos.map(m => `- ${m}`)
-  return [`# Session memo ${sessionId}`, '', '## TODO', ...todos, '', '## Memo', ...memos, ''].join('\n')
+  return [`# Session memo ${sessionId}`, '', '## Memo', ...memos, '', '## TODO', ...todos, ''].join('\n')
 }
 
 // One line per item: newlines would break the Markdown list
