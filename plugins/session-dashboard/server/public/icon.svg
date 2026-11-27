@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- カード 1 枚分の角丸。左端の色帯をこの形で切り抜く -->
+    <clipPath id="c1"><rect x="72" y="72" width="168" height="168" rx="28"/></clipPath>
+    <clipPath id="c2"><rect x="272" y="72" width="168" height="168" rx="28"/></clipPath>
+    <clipPath id="c3"><rect x="72" y="272" width="168" height="168" rx="28"/></clipPath>
+    <clipPath id="c4"><rect x="272" y="272" width="168" height="168" rx="28"/></clipPath>
+  </defs>
+  <!-- 背景 -->
+  <rect width="512" height="512" rx="112" fill="#1f1e1c"/>
+  <!-- 2×2 のセッションカード。左端の色は状態（返事待ち / 指示待ち / 作業中 / 応答なし） -->
+  <g fill="#f4f1ea">
+    <rect x="72" y="72" width="168" height="168" rx="28"/>
+    <rect x="272" y="72" width="168" height="168" rx="28"/>
+    <rect x="72" y="272" width="168" height="168" rx="28"/>
+    <rect x="272" y="272" width="168" height="168" rx="28"/>
+  </g>
+  <rect x="72" y="72" width="34" height="168" fill="#ff6b2c" clip-path="url(#c1)"/>
+  <rect x="272" y="72" width="34" height="168" fill="#2fb8b8" clip-path="url(#c2)"/>
+  <rect x="72" y="272" width="34" height="168" fill="#3d8ff0" clip-path="url(#c3)"/>
+  <rect x="272" y="272" width="34" height="168" fill="#b55ad6" clip-path="url(#c4)"/>
+  <!-- カードの本文っぽい線 -->
+  <g fill="#c9c4b8">
+    <rect x="128" y="118" width="88" height="20" rx="10"/>
+    <rect x="128" y="160" width="60" height="20" rx="10"/>
+    <rect x="328" y="118" width="88" height="20" rx="10"/>
+    <rect x="328" y="160" width="60" height="20" rx="10"/>
+    <rect x="128" y="318" width="88" height="20" rx="10"/>
+    <rect x="128" y="360" width="60" height="20" rx="10"/>
+    <rect x="328" y="318" width="88" height="20" rx="10"/>
+    <rect x="328" y="360" width="60" height="20" rx="10"/>
+  </g>
+</svg>
