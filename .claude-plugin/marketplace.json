@@ -8,6 +8,10 @@
     {
       "name": "session-memo",
       "source": "./plugins/session-memo"
+    },
+    {
+      "name": "session-dashboard",
+      "source": "./plugins/session-dashboard"
     }
   ]
 }

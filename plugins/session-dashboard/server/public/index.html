@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Sessions</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e3e2dd;
+    --waiting: #d9480f; --waiting-bg: #fff1e8;
+    --working: #1c7ed6; --working-bg: #e7f3ff;
+    --stalled: #ae3ec9; --stalled-bg: #f8eefc;
+    --idle: #868e96; --idle-bg: #f1f3f5;
+    --ok: #2b8a3e; --ok-bg: #ebfbee; --late: #e03131;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --card: #20201e; --text: #ececea; --muted: #9a9a94; --line: #33332f;
+      --waiting: #ff8a4c; --waiting-bg: #3a2318;
+      --working: #5aa9f0; --working-bg: #16283a;
+      --stalled: #d68cf0; --stalled-bg: #2f1c36;
+      --idle: #9aa1a8; --idle-bg: #2a2c2e;
+      --ok: #69db7c; --ok-bg: #18301d; --late: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .counts { display: flex; gap: 8px; color: var(--muted); font-size: 13px; }
+  .counts b { color: var(--text); }
+  .spacer { flex: 1; }
+  .conn { font-size: 12px; color: var(--muted); }
+  .conn.down { color: var(--late); }
+  #sound { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  main { padding: 16px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; border-left: 4px solid var(--idle); }
+  .card.waiting { border-left-color: var(--waiting); }
+  .card.working { border-left-color: var(--working); }
+  .card.stalled { border-left-color: var(--stalled); }
+  .card.ended { opacity: .55; }
+  .top { display: flex; align-items: flex-start; gap: 8px; }
+  .project { font-weight: 600; word-break: break-all; flex: 1; }
+  .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+  .badge.waiting { color: var(--waiting); background: var(--waiting-bg); }
+  .badge.working { color: var(--working); background: var(--working-bg); }
+  .badge.stalled { color: var(--stalled); background: var(--stalled-bg); }
+  .badge.idle, .badge.ended { color: var(--idle); background: var(--idle-bg); }
+  .badge.ok { color: var(--ok); background: var(--ok-bg); }
+  .summary { font-size: 14px; }
+  .summary.fallback { color: var(--muted); }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+  .meta .late { color: var(--late); font-weight: 600; }
+  .skills span { border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-right: 4px; }
+  .actions { display: flex; gap: 8px; font-size: 12px; }
+  .actions a { color: var(--muted); }
+  .empty { color: var(--muted); padding: 40px 16px; grid-column: 1 / -1; text-align: center; }
+  @media (max-width: 400px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude Sessions</h1>
+  <div class="counts" id="counts"></div>
+  <div class="spacer"></div>
+  <button id="sound" type="button">🔇 クリックで通知音を有効化</button>
+  <span class="conn" id="conn">接続中…</span>
+</header>
+<main id="list"><div class="empty">読み込み中…</div></main>
+
+<script>
+  const LATE_MS = 30 * 60 * 1000; // 返事待ちがこれを超えたら赤くする
+  const LABEL = { waiting: '返事待ち', working: '作業中', stalled: '止まっている', idle: '待機', ended: '終了' };
+  const REASON = { permission: '実行許可', question: '質問', reply: '', idle: '' };
+
+  let sessions = [];
+  let prevStatus = null; // sessionId -> status（初回は鳴らさない）
+
+  // ---- 通知音（Web Audio API） ----
+  let audio = null;
+  const soundBtn = document.getElementById('sound');
+  soundBtn.addEventListener('click', async () => {
+    audio = audio || new AudioContext();
+    await audio.resume();
+    soundBtn.textContent = '🔔 通知音 ON';
+    beep();
+  });
+  function beep() {
+    if (!audio || audio.state !== 'running') return;
+    const t = audio.currentTime;
+    [880, 1320].forEach((freq, i) => {
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.frequency.value = freq;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.0001, t + i * 0.15);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + i * 0.15 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.15 + 0.25);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(t + i * 0.15);
+      osc.stop(t + i * 0.15 + 0.3);
+    });
+  }
+
+  // ---- 描画 ----
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  }
+  function ago(iso) {
+    const ms = Date.now() - Date.parse(iso);
+    const m = Math.floor(ms / 60000);
+    if (m < 1) return 'たった今';
+    if (m < 60) return `${m}分`;
+    const h = Math.floor(m / 60);
+    return `${h}時間${m % 60}分`;
+  }
+
+  function render() {
+    const list = document.getElementById('list');
+    const counts = { waiting: 0, working: 0, stalled: 0 };
+    sessions.forEach((s) => { if (s.status in counts) counts[s.status]++; });
+    document.getElementById('counts').innerHTML =
+      `<span>返事待ち <b>${counts.waiting}</b></span><span>作業中 <b>${counts.working}</b></span><span>止まっている <b>${counts.stalled}</b></span>`;
+    document.title = counts.waiting ? `(${counts.waiting}) Claude Sessions` : 'Claude Sessions';
+
+    if (!sessions.length) {
+      list.innerHTML = '<div class="empty">表示するセッションがありません</div>';
+      return;
+    }
+    list.innerHTML = sessions.map((s) => {
+      const since = Date.now() - Date.parse(s.statusSince);
+      const late = s.status === 'waiting' && since > LATE_MS;
+      const reason = s.waitingReason && REASON[s.waitingReason] ? `（${REASON[s.waitingReason]}）` : '';
+      const summary = s.summary
+        ? `<div class="summary">${esc(s.summary)}</div>`
+        : `<div class="summary fallback">${esc(s.lastPrompt || '（まだ発言がありません）')}</div>`;
+      const git = s.git ? `<span>⎇ ${esc(s.git.branch)}${s.git.dirty ? ` ・未コミット ${s.git.dirty}` : ''}</span>` : '';
+      const skills = s.recentSkills?.length
+        ? `<span class="skills">${s.recentSkills.map((k) => `<span>${esc(k)}</span>`).join('')}</span>` : '';
+      const closable = s.closable ? '<span class="badge ok">閉じてよい</span>' : '';
+      const vscode = s.cwd ? `<a href="vscode://file${encodeURI(s.cwd)}">VSCode で開く</a>` : '';
+      return `<article class="card ${s.status}">
+        <div class="top">
+          <div class="project">${esc(s.project)}</div>
+          ${closable}
+          <span class="badge ${s.status}">${LABEL[s.status]}${reason}</span>
+        </div>
+        ${summary}
+        <div class="meta">
+          <span class="${late ? 'late' : ''}">${LABEL[s.status]} ${ago(s.statusSince)}</span>
+          ${git}
+          ${skills}
+        </div>
+        <div class="actions">${vscode}<span title="${esc(s.sessionId)}">${esc(s.sessionId.slice(0, 8))}</span></div>
+      </article>`;
+    }).join('');
+  }
+
+  function onSnapshot(snap) {
+    sessions = snap.sessions;
+    const next = Object.fromEntries(sessions.map((s) => [s.sessionId, s.status]));
+    if (prevStatus) {
+      // 返事待ちに変わったセッションがあれば 1 回だけ鳴らす
+      const turned = sessions.some((s) => s.status === 'waiting' && prevStatus[s.sessionId] !== 'waiting');
+      if (turned) beep();
+    }
+    prevStatus = next;
+    render();
+  }
+
+  // ---- SSE ----
+  const conn = document.getElementById('conn');
+  const es = new EventSource('/events');
+  es.onopen = () => { conn.textContent = '接続中'; conn.classList.remove('down'); };
+  es.onerror = () => { conn.textContent = '切断（再接続中）'; conn.classList.add('down'); };
+  es.onmessage = (ev) => onSnapshot(JSON.parse(ev.data));
+
+  // 経過時間の表示を進める
+  setInterval(render, 30 * 1000);
+</script>
+</body>
+</html>

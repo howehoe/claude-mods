@@ -17,3 +17,4 @@ Claude Code 用の mod 集です。
 | 名前 | 内容 |
 | --- | --- |
 | session-memo | セッションごとの TODO / メモを Markdown で保持。プロンプト上のバンドと `/memo` ペイン |
+| session-dashboard | 並列セッションの状態（返事待ち / 作業中 / 停止）をブラウザで一覧。Haiku の 1 行要約と通知音付き |

@@ -1,0 +1,8 @@
+{
+  "name": "session-dashboard",
+  "version": "0.1.0",
+  "description": "並列で動かしている Claude Code セッションの状態（返事待ち / 作業中 / 停止）をブラウザで一覧するダッシュボード",
+  "author": {
+    "name": "howehoe"
+  }
+}
