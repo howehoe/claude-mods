@@ -24,6 +24,9 @@ import {
   prCacheTtl,
   projectName,
   sortSessions,
+  applyNoteOp,
+  normalizeNotes,
+  isTrustedWrite,
 } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -269,6 +272,83 @@ function tail(text, max) {
   return flat.length > max ? `…${flat.slice(-max)}` : flat;
 }
 
+// ---- 作業メモ・TODO ----------------------------------------------------------
+const NOTES_FILE = path.join(BASE_DIR, 'notes.json');
+const NOTES_BODY_LIMIT = 64 * 1024;
+
+let notes = normalizeNotes(null);
+try {
+  notes = normalizeNotes(JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8')));
+} catch {
+  // 初回、または壊れている場合は空から始める（壊れたファイルは上書きしない）
+  if (fs.existsSync(NOTES_FILE)) {
+    try {
+      fs.copyFileSync(NOTES_FILE, `${NOTES_FILE}.broken-${Date.now()}`);
+    } catch {
+      // 退避できなくても続ける
+    }
+  }
+}
+
+function saveNotes() {
+  // 途中まで書かれたファイルを残さないよう rename で置き換える
+  const tmp = `${NOTES_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(notes, null, 2));
+  fs.renameSync(tmp, NOTES_FILE);
+}
+
+function readJsonBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error('too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function handleNoteWrite(req, res) {
+  if (!isTrustedWrite(req.headers, PORT)) {
+    res.writeHead(403).end('forbidden');
+    return;
+  }
+  let op;
+  try {
+    op = await readJsonBody(req, NOTES_BODY_LIMIT);
+  } catch {
+    res.writeHead(400).end('bad request');
+    return;
+  }
+  const result = applyNoteOp(notes, op);
+  if (result.error) {
+    res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ error: result.error }));
+    return;
+  }
+  notes = result.notes;
+  try {
+    saveNotes();
+  } catch {
+    res.writeHead(500).end('save failed');
+    return;
+  }
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify({ ok: true }));
+  broadcastNotes();
+}
+
 // ---- スナップショット ------------------------------------------------------------
 function readStates() {
   const out = [];
@@ -339,6 +419,15 @@ function broadcast() {
   for (const res of clients) res.write(data);
 }
 
+function notesEvent() {
+  return `event: notes\ndata: ${JSON.stringify(notes)}\n\n`;
+}
+
+function broadcastNotes() {
+  const data = notesEvent();
+  for (const res of clients) res.write(data);
+}
+
 const INDEX = path.join(HERE, 'public', 'index.html');
 
 // 配る静的ファイルはこの一覧に載せたものだけ（パスをそのままファイル名に使うので、一覧外は読まない）
@@ -363,6 +452,15 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(snapshot()));
     return;
   }
+  if (url.pathname === '/api/notes') {
+    if (req.method === 'POST') {
+      handleNoteWrite(req, res);
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(notes));
+    return;
+  }
   if (url.pathname === '/events') {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -370,6 +468,7 @@ const server = http.createServer((req, res) => {
       connection: 'keep-alive',
     });
     res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
+    res.write(notesEvent());
     clients.add(res);
     req.on('close', () => clients.delete(res));
     return;
