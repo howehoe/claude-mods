@@ -79,6 +79,37 @@
   .actions { display: flex; gap: 8px; font-size: 12px; }
   .actions a { color: var(--muted); }
   .empty { color: var(--muted); padding: 40px 16px; grid-column: 1 / -1; text-align: center; }
+  /* ---- メモ・TODO ---- */
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; align-items: start; }
+  aside { position: sticky; top: 0; max-height: 100vh; overflow-y: auto; border-left: 1px solid var(--line); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  aside h3 { font-size: 12px; margin: 0 0 4px; color: var(--muted); font-weight: 600; }
+  .daynav { display: flex; align-items: center; gap: 4px; }
+  .daynav .day { flex: 1; font-weight: 600; }
+  button.small { border: 1px solid var(--line); background: var(--card); color: var(--text); border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 12px; }
+  button.small:disabled { opacity: .4; cursor: default; }
+  .todos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .todos li { display: flex; align-items: flex-start; gap: 6px; font-size: 13px; }
+  .todos li input { margin-top: 3px; }
+  .todos li .txt { flex: 1; overflow-wrap: anywhere; }
+  .todos li.done .txt { color: var(--muted); text-decoration: line-through; }
+  .todos li .from { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+  .todos li .del { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; visibility: hidden; }
+  .todos li:hover .del { visibility: visible; }
+  .todos .none { color: var(--muted); font-size: 12px; }
+  .add { display: flex; gap: 4px; margin: 4px 0 0; }
+  .add input { flex: 1; min-width: 0; }
+  input.text, textarea.memo { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  textarea.memo { width: 100%; resize: vertical; min-height: 64px; display: block; }
+  .saved { font-size: 11px; color: var(--muted); min-height: 1em; }
+  .saved.err { color: var(--late); }
+  details.notes-box { border-top: 1px dashed var(--line); padding-top: 4px; font-size: 13px; }
+  details.notes-box > summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details.notes-box[open] > summary { margin-bottom: 4px; }
+  details.notes-box .body { display: flex; flex-direction: column; gap: 4px; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { position: static; max-height: none; border-left: 0; border-bottom: 1px solid var(--line); order: -1; }
+  }
   @media (max-width: 400px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -90,7 +121,27 @@
   <button id="sound" type="button">🔇 クリックで通知音を有効化</button>
   <span class="conn" id="conn">サーバーに接続しています…</span>
 </header>
+<div class="layout">
 <main id="list"><div class="empty">読み込み中…</div></main>
+<aside>
+  <div class="daynav">
+    <span>📝</span>
+    <button class="small" type="button" id="prevDay" title="前の日">◀</button>
+    <span class="day" id="dayLabel"></span>
+    <button class="small" type="button" id="nextDay" title="次の日">▶</button>
+    <button class="small" type="button" id="toToday">今日</button>
+  </div>
+  <section id="openSection">
+    <h3>やること</h3>
+    <ul class="todos" id="openTodos"></ul>
+    <form class="add" data-session=""><input class="text" maxlength="500" placeholder="TODO を追加（Enter）"><button class="small">追加</button></form>
+  </section>
+  <section>
+    <h3 id="doneTitle">やったこと</h3>
+    <ul class="todos" id="doneTodos"></ul>
+  </section>
+</aside>
+</div>
 
 <script>
   const LATE_MS = 30 * 60 * 1000; // 返事待ちがこれを超えたら赤くする
@@ -170,11 +221,36 @@
       `<span>返事待ち <b>${counts.waiting}</b></span><span>指示待ち <b>${counts.done}</b></span><span>作業中 <b>${counts.working}</b></span><span>応答なし <b>${counts.stalled}</b></span>`;
     document.title = counts.waiting ? `(${counts.waiting}) Claude Sessions` : 'Claude Sessions';
 
+    // カードは作り直さず中身だけ差し替える（メモ・TODO の入力中に消えないように）
+    const ids = new Set(sessions.map((s) => s.sessionId));
+    for (const [id, c] of cards) if (!ids.has(id)) { c.el.remove(); cards.delete(id); }
     if (!sessions.length) {
       list.innerHTML = '<div class="empty">表示するセッションがありません。<br>session-dashboard プラグインを入れた後に起動したセッションが、ここに表示されます。</div>';
       return;
     }
-    list.innerHTML = sessions.map((s) => {
+    list.querySelector(':scope > .empty')?.remove();
+    for (const s of sessions) {
+      const c = cards.get(s.sessionId) ?? createCard(s);
+      c.el.className = `card ${s.status}`;
+      c.info.innerHTML = cardInfo(s);
+      c.project = s.project;
+    }
+    // 並び順が変わったときだけ並べ替える。動かすとフォーカスが外れるので戻す
+    const desired = sessions.map((s) => cards.get(s.sessionId).el);
+    const current = [...list.children];
+    if (desired.some((el, i) => current[i] !== el)) {
+      const active = document.activeElement;
+      const sel = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
+      list.append(...desired);
+      if (active && active !== document.activeElement && active.isConnected) {
+        active.focus({ preventScroll: true });
+        if (sel) active.setSelectionRange(...sel);
+      }
+    }
+    renderNotes();
+  }
+
+  function cardInfo(s) {
       const since = Date.now() - Date.parse(s.statusSince);
       const late = s.status === 'waiting' && since > LATE_MS;
       const reason = s.waitingReason && REASON[s.waitingReason] ? `（${REASON[s.waitingReason]}）` : '';
@@ -186,7 +262,7 @@
         ? `<span class="skills">${s.recentSkills.map((k) => `<span>${esc(k)}</span>`).join('')}</span>` : '';
       const closable = s.closable ? '<span class="badge ok">閉じてよい</span>' : '';
       const vscode = s.cwd ? `<a href="vscode://file${encodeURI(s.cwd)}">VSCode で開く</a>` : '';
-      return `<article class="card ${s.status}">
+      return `
         <div class="top">
           <div class="project">${esc(s.project)}</div>
           ${closable}
@@ -201,9 +277,193 @@
           ${git}
           ${skills}
         </div>
-        <div class="actions">${vscode}<span title="${esc(s.sessionId)}">${esc(s.sessionId.slice(0, 8))}</span></div>
-      </article>`;
-    }).join('');
+        <div class="actions">${vscode}<span title="${esc(s.sessionId)}">${esc(s.sessionId.slice(0, 8))}</span></div>`;
+  }
+
+  // ---- メモ・TODO ----
+  let notes = { todos: [], sessionMemos: {} };
+  let notesLoaded = false;
+  const cards = new Map(); // sessionId -> { el, info, box, todos, memo, saved, project }
+  const dayKey = (d) => d.toLocaleDateString('sv-SE'); // ローカル日付の YYYY-MM-DD
+  let viewDay = dayKey(new Date());
+
+  function createCard(s) {
+    const el = document.createElement('article');
+    el.innerHTML = `<div class="info" style="display:contents"></div>
+      <details class="notes-box">
+        <summary></summary>
+        <div class="body">
+          <ul class="todos"></ul>
+          <form class="add"><input class="text" maxlength="500" placeholder="このセッションの TODO（Enter）"><button class="small">追加</button></form>
+          <textarea class="memo" placeholder="このセッションのメモ（自動で保存）"></textarea>
+          <div class="saved"></div>
+        </div>
+      </details>`;
+    const c = {
+      el,
+      info: el.querySelector('.info'),
+      box: el.querySelector('details'),
+      summary: el.querySelector('summary'),
+      todos: el.querySelector('.todos'),
+      memo: el.querySelector('textarea'),
+      saved: el.querySelector('.saved'),
+      project: s.project,
+      opened: false,
+    };
+    el.querySelector('form').dataset.session = s.sessionId;
+    c.memo.dataset.session = s.sessionId;
+    cards.set(s.sessionId, c);
+    return c;
+  }
+
+  function todoItem(t, { from = false } = {}) {
+    const label = from && t.project ? `<span class="from" title="${esc(t.project)}">${esc(t.project)}</span>` : '';
+    return `<li class="${t.done ? 'done' : ''}" data-id="${esc(t.id)}">
+      <input type="checkbox" class="check" ${t.done ? 'checked' : ''}>
+      <span class="txt" title="ダブルクリックで編集">${esc(t.text)}</span>${label}
+      <button type="button" class="del" title="削除">×</button>
+    </li>`;
+  }
+
+  // 入力中・保存待ちのメモは上書きしない
+  function setMemo(ta, text) {
+    if (document.activeElement === ta || pending.has(memoKey(ta))) return;
+    if (ta.value !== text) ta.value = text;
+  }
+
+  function renderNotes() {
+    if (!notesLoaded) return;
+    for (const [id, c] of cards) {
+      const todos = notes.todos.filter((t) => t.sessionId === id);
+      // 未完了を先、完了は新しい順に後ろへ
+      todos.sort((a, b) => (a.done - b.done) || (a.done ? (b.doneAt ?? '').localeCompare(a.doneAt ?? '') : 0));
+      const memo = notes.sessionMemos[id]?.text ?? '';
+      const open = todos.filter((t) => !t.done).length;
+      c.summary.textContent = `📝 メモ・TODO${open ? `（未完了 ${open}）` : ''}${memo.trim() ? '・メモあり' : ''}`;
+      c.todos.innerHTML = todos.map((t) => todoItem(t)).join('');
+      setMemo(c.memo, memo);
+      // 中身があるカードは最初だけ開いておく
+      if (!c.opened) { c.opened = true; if (open || memo.trim()) c.box.open = true; }
+    }
+
+    const today = dayKey(new Date());
+    const isToday = viewDay === today;
+    document.getElementById('dayLabel').textContent = isToday ? `今日（${viewDay.slice(5).replace('-', '/')}）` : viewDay.replace(/-/g, '/');
+    document.getElementById('nextDay').disabled = isToday;
+    document.getElementById('toToday').disabled = isToday;
+
+    // やること: 全体の TODO を先に、セッションの TODO は作業名を添えて（今日を表示しているときだけ）
+    document.getElementById('openSection').hidden = !isToday;
+    const open = notes.todos.filter((t) => !t.done).sort((a, b) => (a.sessionId ? 1 : 0) - (b.sessionId ? 1 : 0));
+    document.getElementById('openTodos').innerHTML =
+      open.map((t) => todoItem(t, { from: true })).join('') || '<li class="none">やることはありません</li>';
+
+    const done = notes.todos.filter((t) => t.done && t.doneAt && dayKey(new Date(t.doneAt)) === viewDay)
+      .sort((a, b) => a.doneAt.localeCompare(b.doneAt));
+    document.getElementById('doneTitle').textContent = `やったこと（${done.length}）`;
+    document.getElementById('doneTodos').innerHTML =
+      done.map((t) => todoItem(t, { from: true })).join('') || '<li class="none">まだありません</li>';
+  }
+
+  async function postNote(op) {
+    const res = await fetch('/api/notes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(op),
+      keepalive: true,
+    });
+    if (!res.ok) throw new Error(`保存に失敗しました（${res.status}）`);
+  }
+
+  // 失敗はその場に出す（メモ欄があればそこ、なければ alert）
+  async function send(op, savedEl = null) {
+    try {
+      await postNote(op);
+      if (savedEl) { savedEl.textContent = `保存しました ${new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}`; savedEl.classList.remove('err'); }
+      return true;
+    } catch (e) {
+      if (savedEl) { savedEl.textContent = e.message; savedEl.classList.add('err'); } else alert(e.message);
+      return false;
+    }
+  }
+
+  // メモは打ち終わって 0.8 秒後、またはフォーカスが外れたときに保存する
+  const pending = new Map(); // key -> { timer, op, savedEl }
+  const memoKey = (ta) => ta.dataset.session;
+  function memoSavedEl(ta) { return ta.nextElementSibling; }
+  function scheduleMemo(ta) {
+    const key = memoKey(ta);
+    clearTimeout(pending.get(key)?.timer);
+    const op = { type: 'setSessionMemo', sessionId: ta.dataset.session, project: cards.get(ta.dataset.session)?.project ?? '', text: ta.value };
+    const savedEl = memoSavedEl(ta);
+    savedEl.textContent = '入力中…';
+    savedEl.classList.remove('err');
+    pending.set(key, { timer: setTimeout(() => flushMemo(key), 800), op, savedEl });
+  }
+  async function flushMemo(key) {
+    const p = pending.get(key);
+    if (!p) return;
+    clearTimeout(p.timer);
+    const ok = await send(p.op, p.savedEl);
+    // 送っている間に打ち直されていなければ待ちを外す
+    if (pending.get(key) === p) pending.delete(key);
+    if (ok) renderNotes();
+  }
+
+  document.addEventListener('input', (e) => {
+    if (e.target.matches('textarea.memo')) scheduleMemo(e.target);
+  });
+  document.addEventListener('focusout', (e) => {
+    if (e.target.matches('textarea.memo')) flushMemo(memoKey(e.target));
+  });
+  window.addEventListener('pagehide', () => { for (const key of pending.keys()) flushMemo(key); });
+
+  document.addEventListener('submit', async (e) => {
+    const form = e.target.closest('form.add');
+    if (!form) return;
+    e.preventDefault();
+    const input = form.querySelector('input');
+    const text = input.value.trim();
+    if (!text) return;
+    const sessionId = form.dataset.session || null;
+    const op = { type: 'addTodo', text, sessionId, project: sessionId ? cards.get(sessionId)?.project ?? '' : '' };
+    if (await send(op)) input.value = '';
+  });
+
+  document.addEventListener('change', (e) => {
+    if (!e.target.matches('.todos .check')) return;
+    send({ type: 'updateTodo', id: e.target.closest('li').dataset.id, done: e.target.checked });
+  });
+
+  document.addEventListener('click', (e) => {
+    const del = e.target.closest('.todos .del');
+    if (!del) return;
+    const li = del.closest('li');
+    if (confirm(`「${li.querySelector('.txt').textContent}」を削除しますか？`)) send({ type: 'deleteTodo', id: li.dataset.id });
+  });
+
+  document.addEventListener('dblclick', (e) => {
+    const txt = e.target.closest('.todos .txt');
+    if (!txt) return;
+    const text = prompt('TODO を編集', txt.textContent);
+    if (text != null && text.trim() && text.trim() !== txt.textContent) {
+      send({ type: 'updateTodo', id: txt.closest('li').dataset.id, text });
+    }
+  });
+
+  function moveDay(delta) {
+    const [y, m, d] = viewDay.split('-').map(Number);
+    viewDay = dayKey(new Date(y, m - 1, d + delta));
+    renderNotes();
+  }
+  document.getElementById('prevDay').addEventListener('click', () => moveDay(-1));
+  document.getElementById('nextDay').addEventListener('click', () => moveDay(1));
+  document.getElementById('toToday').addEventListener('click', () => { viewDay = dayKey(new Date()); renderNotes(); });
+
+  function onNotes(next) {
+    notes = next;
+    notesLoaded = true;
+    renderNotes();
   }
 
   function onSnapshot(snap) {
@@ -225,6 +485,7 @@
   es.onopen = () => { conn.textContent = '● 接続済み'; conn.classList.remove('down'); };
   es.onerror = () => { conn.textContent = '切断（再接続中）'; conn.classList.add('down'); };
   es.onmessage = (ev) => onSnapshot(JSON.parse(ev.data));
+  es.addEventListener('notes', (ev) => onNotes(JSON.parse(ev.data)));
 
   // 経過時間の表示を進める
   setInterval(render, 30 * 1000);

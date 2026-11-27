@@ -249,3 +249,108 @@ export function notionTitle(json) {
   }
   return null;
 }
+
+// ---- 作業メモ・TODO ----------------------------------------------------------
+// notes.json の形:
+// {
+//   todos: [{ id, text, done, createdAt, doneAt, sessionId, project }],  // sessionId が null なら全体の TODO
+//   sessionMemos: { [sessionId]: { text, project, updatedAt } },
+// }
+export const TODO_MAX_LEN = 500;
+export const MEMO_MAX_LEN = 20000;
+const SESSION_ID_RE = /^[\w-]{1,100}$/;
+
+export function emptyNotes() {
+  return { todos: [], sessionMemos: {} };
+}
+
+/** ファイルから読んだ値を、欠けた項目を補った形にそろえる */
+export function normalizeNotes(raw) {
+  const n = emptyNotes();
+  if (!raw || typeof raw !== 'object') return n;
+  if (Array.isArray(raw.todos)) {
+    n.todos = raw.todos
+      .filter((t) => t && typeof t.id === 'string' && typeof t.text === 'string')
+      .map((t) => ({
+        id: t.id,
+        text: t.text,
+        done: Boolean(t.done),
+        createdAt: t.createdAt ?? null,
+        doneAt: t.done ? (t.doneAt ?? null) : null,
+        sessionId: typeof t.sessionId === 'string' ? t.sessionId : null,
+        project: typeof t.project === 'string' ? t.project : null,
+      }));
+  }
+  if (raw.sessionMemos && typeof raw.sessionMemos === 'object') n.sessionMemos = { ...raw.sessionMemos };
+  return n;
+}
+
+const str = (v) => (typeof v === 'string' ? v : '');
+
+/**
+ * 画面からの操作を notes に当てる（元の notes は書き換えない）
+ * @returns {{ notes: object, error: string|null }}
+ */
+export function applyNoteOp(notes, op, now = new Date().toISOString(), newId = () => Math.random().toString(36).slice(2, 10)) {
+  const fail = (error) => ({ notes, error });
+  if (!op || typeof op !== 'object') return fail('invalid op');
+  const next = { todos: [...notes.todos], sessionMemos: { ...notes.sessionMemos } };
+  const project = str(op.project).slice(0, 200) || null;
+
+  switch (op.type) {
+    case 'addTodo': {
+      const text = str(op.text).trim();
+      if (!text || text.length > TODO_MAX_LEN) return fail('invalid text');
+      const sessionId = op.sessionId == null ? null : str(op.sessionId);
+      if (sessionId !== null && !SESSION_ID_RE.test(sessionId)) return fail('invalid sessionId');
+      next.todos.push({ id: newId(), text, done: false, createdAt: now, doneAt: null, sessionId, project: sessionId ? project : null });
+      return { notes: next, error: null };
+    }
+    case 'updateTodo': {
+      const i = next.todos.findIndex((t) => t.id === op.id);
+      if (i < 0) return fail('not found');
+      const t = { ...next.todos[i] };
+      if ('done' in op) {
+        const done = Boolean(op.done);
+        if (done !== t.done) t.doneAt = done ? now : null;
+        t.done = done;
+      }
+      if ('text' in op) {
+        const text = str(op.text).trim();
+        if (!text || text.length > TODO_MAX_LEN) return fail('invalid text');
+        t.text = text;
+      }
+      next.todos[i] = t;
+      return { notes: next, error: null };
+    }
+    case 'deleteTodo': {
+      const before = next.todos.length;
+      next.todos = next.todos.filter((t) => t.id !== op.id);
+      return next.todos.length === before ? fail('not found') : { notes: next, error: null };
+    }
+    case 'setSessionMemo': {
+      const sessionId = str(op.sessionId);
+      if (!SESSION_ID_RE.test(sessionId)) return fail('invalid sessionId');
+      const text = str(op.text);
+      if (text.length > MEMO_MAX_LEN) return fail('too long');
+      if (text.trim()) next.sessionMemos[sessionId] = { text, project, updatedAt: now };
+      else delete next.sessionMemos[sessionId];
+      return { notes: next, error: null };
+    }
+    default:
+      return fail('unknown op');
+  }
+}
+
+/**
+ * 書き込み API を他のサイトから叩かれないための確認
+ * - Host が loopback であること（DNS リバインディング対策）
+ * - Origin があるならこのサーバー自身であること
+ * - JSON で送られていること（他サイトからは CORS のプリフライトが必要になり、応答しないので送れない）
+ */
+export function isTrustedWrite(headers, port) {
+  const allowed = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  if (!allowed.has(headers.host)) return false;
+  if (headers.origin && !allowed.has(headers.origin.replace(/^http:\/\//, ''))) return false;
+  return /^application\/json\b/i.test(headers['content-type'] ?? '');
+}

@@ -16,6 +16,11 @@ import {
   notionIdFromUrl,
   notionTitle,
   projectName,
+  applyNoteOp,
+  emptyNotes,
+  isTrustedWrite,
+  normalizeNotes,
+  TODO_MAX_LEN,
 } from '../server/lib.mjs';
 
 const base = { session_id: 's1', cwd: '/repo', transcript_path: '/t.jsonl' };
@@ -172,4 +177,75 @@ test('Notion API のレスポンスからタイトルを取り出す', () => {
   assert.equal(notionTitle(page), '【UX】ボタン修正');
   assert.equal(notionTitle({ object: 'database', title: [{ plain_text: '開発チケット' }] }), '開発チケット');
   assert.equal(notionTitle({ object: 'page', properties: {} }), null);
+});
+
+// ---- 作業メモ・TODO ----
+const ids = () => {
+  let n = 0;
+  return () => `id${++n}`;
+};
+
+test('TODO の追加・完了・編集・削除', () => {
+  const newId = ids();
+  let r = applyNoteOp(emptyNotes(), { type: 'addTodo', text: ' 全体のやること ', project: 'x' }, 't1', newId);
+  assert.equal(r.error, null);
+  // 全体の TODO には作業名を付けない
+  assert.deepEqual(r.notes.todos[0], { id: 'id1', text: '全体のやること', done: false, createdAt: 't1', doneAt: null, sessionId: null, project: null });
+  r = applyNoteOp(r.notes, { type: 'addTodo', text: 'セッションの', sessionId: 'abc-1', project: 'repo' }, 't2', newId);
+  assert.deepEqual([r.notes.todos[1].sessionId, r.notes.todos[1].project], ['abc-1', 'repo']);
+
+  r = applyNoteOp(r.notes, { type: 'updateTodo', id: 'id1', done: true }, 't3');
+  assert.deepEqual([r.notes.todos[0].done, r.notes.todos[0].doneAt], [true, 't3']);
+  // 完了のまま送り直しても完了時刻は変えない
+  r = applyNoteOp(r.notes, { type: 'updateTodo', id: 'id1', done: true }, 't4');
+  assert.equal(r.notes.todos[0].doneAt, 't3');
+  r = applyNoteOp(r.notes, { type: 'updateTodo', id: 'id1', done: false, text: '直した' }, 't5');
+  assert.deepEqual([r.notes.todos[0].done, r.notes.todos[0].doneAt, r.notes.todos[0].text], [false, null, '直した']);
+
+  r = applyNoteOp(r.notes, { type: 'deleteTodo', id: 'id1' });
+  assert.deepEqual(r.notes.todos.map((t) => t.id), ['id2']);
+  assert.equal(applyNoteOp(r.notes, { type: 'deleteTodo', id: 'id1' }).error, 'not found');
+});
+
+test('不正な TODO 操作は元の notes を変えずにエラーを返す', () => {
+  const notes = emptyNotes();
+  for (const op of [
+    null,
+    { type: 'nope' },
+    { type: 'addTodo', text: '   ' },
+    { type: 'addTodo', text: 'a'.repeat(TODO_MAX_LEN + 1) },
+    { type: 'addTodo', text: 'a', sessionId: '../etc' },
+    { type: 'updateTodo', id: 'missing', done: true },
+  ]) {
+    const r = applyNoteOp(notes, op);
+    assert.ok(r.error, JSON.stringify(op));
+    assert.equal(r.notes, notes);
+  }
+  assert.deepEqual(notes, emptyNotes());
+});
+
+test('セッションのメモ（空にすると消える）', () => {
+  let r = applyNoteOp(emptyNotes(), { type: 'setSessionMemo', sessionId: 's1', project: 'repo', text: 'メモ' }, 't1');
+  assert.deepEqual(r.notes.sessionMemos.s1, { text: 'メモ', project: 'repo', updatedAt: 't1' });
+  r = applyNoteOp(r.notes, { type: 'setSessionMemo', sessionId: 's1', text: '  ' });
+  assert.deepEqual(r.notes.sessionMemos, {});
+  assert.equal(applyNoteOp(r.notes, { type: 'setSessionMemo', sessionId: '../x', text: 'a' }).error, 'invalid sessionId');
+});
+
+test('notes.json の読み込みで欠けた項目を補う', () => {
+  assert.deepEqual(normalizeNotes(null), emptyNotes());
+  assert.deepEqual(normalizeNotes('壊れた値'), emptyNotes());
+  const n = normalizeNotes({ todos: [{ id: 'a', text: 't', done: 0, doneAt: 'x' }, { text: 'id なし' }], sessionMemos: { s1: { text: 'm' } } });
+  assert.deepEqual(n.todos, [{ id: 'a', text: 't', done: false, createdAt: null, doneAt: null, sessionId: null, project: null }]);
+  assert.equal(n.sessionMemos.s1.text, 'm');
+});
+
+test('書き込みはこのサーバー自身からの JSON だけ受け付ける', () => {
+  const ok = { host: '127.0.0.1:7878', origin: 'http://127.0.0.1:7878', 'content-type': 'application/json' };
+  assert.equal(isTrustedWrite(ok, 7878), true);
+  assert.equal(isTrustedWrite({ ...ok, origin: undefined }, 7878), true);
+  assert.equal(isTrustedWrite({ ...ok, host: 'localhost:7878', origin: 'http://localhost:7878' }, 7878), true);
+  assert.equal(isTrustedWrite({ ...ok, origin: 'https://evil.example' }, 7878), false);
+  assert.equal(isTrustedWrite({ ...ok, host: 'evil.example:7878' }, 7878), false);
+  assert.equal(isTrustedWrite({ ...ok, 'content-type': 'text/plain' }, 7878), false);
 });
